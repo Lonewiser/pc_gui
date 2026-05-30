@@ -4,9 +4,9 @@ import struct
 import time
 import numpy as np
 import scipy.linalg
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, QGroupBox, QTextEdit,
-                             QTabWidget)
+                             QTabWidget, QComboBox)
 from PyQt5.QtCore import QTimer
 import pyqtgraph as pg
 import serial
@@ -135,6 +135,43 @@ class MotorControllerGUI(QMainWindow):
         spd_layout.addWidget(spd_test_group)
         spd_layout.addStretch()
         self.tabs.addTab(self.tab_spd, "速度控制")
+
+        # Tab 3: 位置跟踪
+        self.tab_track = QWidget()
+        track_layout = QVBoxLayout(self.tab_track)
+        track_param_group = QGroupBox("波形参数")
+        track_param_layout = QHBoxLayout()
+
+        # Wave type selector
+        track_param_layout.addWidget(QLabel("波形类型:"))
+        self.wave_type_combo = QComboBox()
+        self.wave_type_combo.addItems(["方波", "正弦波", "三角波"])
+        track_param_layout.addWidget(self.wave_type_combo)
+
+        # Period input
+        track_param_layout.addWidget(QLabel("周期(s):"))
+        self.wave_period_input = QLineEdit("2.0")
+        track_param_layout.addWidget(self.wave_period_input)
+
+        # Amplitude input
+        track_param_layout.addWidget(QLabel("幅值(度):"))
+        self.wave_amplitude_input = QLineEdit("360")
+        track_param_layout.addWidget(self.wave_amplitude_input)
+
+        track_param_group.setLayout(track_param_layout)
+        track_layout.addWidget(track_param_group)
+
+        # Control button
+        track_test_group = QGroupBox("跟踪运行")
+        track_test_layout = QHBoxLayout()
+        self.btn_test_track = QPushButton("开始跟踪")
+        self.btn_test_track.clicked.connect(lambda: self.toggle_test("TRACK"))
+        track_test_layout.addWidget(self.btn_test_track)
+        track_test_group.setLayout(track_test_layout)
+        track_layout.addWidget(track_test_group)
+        track_layout.addStretch()
+
+        self.tabs.addTab(self.tab_track, "位置跟踪")
         
         # 日志
         log_group = QGroupBox("日志")
@@ -171,11 +208,13 @@ class MotorControllerGUI(QMainWindow):
         self.plot_widget.addLegend()
         self.plot_main = self.plot_widget.plot(pen='y', name='主数据(Pos/Spd)')
         self.voltage_curve = self.plot_widget.plot(pen='r', name='电压')
+        self.ref_curve = self.plot_widget.plot(pen='g', name='参考位置')
         plot_panel.addWidget(self.plot_widget)
         
         self.time_data = []
         self.main_data = []
         self.vol_data = []
+        self.ref_data = []
         self.start_time = time.time()
         
         self.timer = QTimer()
@@ -185,6 +224,25 @@ class MotorControllerGUI(QMainWindow):
     def log(self, msg):
         self.log_text.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+
+    def get_square_wave(self, t, period, amplitude):
+        """Generate square wave position based on time"""
+        phase = (t % period) / period
+        return amplitude if phase < 0.5 else -amplitude
+
+    def get_sine_wave(self, t, period, amplitude):
+        """Generate sine wave position based on time"""
+        return amplitude * np.sin(2 * np.pi * t / period)
+
+    def get_triangle_wave(self, t, period, amplitude):
+        """Generate triangle wave position based on time"""
+        phase = (t % period) / period
+        if phase < 0.25:
+            return amplitude * 4 * phase
+        elif phase < 0.75:
+            return amplitude * (2 - 4 * phase)
+        else:
+            return amplitude * (-4 + 4 * phase)
 
     def update_port_list(self):
         ports = [port.device for port in serial.tools.list_ports.comports()]
@@ -331,8 +389,10 @@ class MotorControllerGUI(QMainWindow):
             self.active_mode = None
             if mode == "POS":
                 self.btn_test_pos.setText("开始控制")
-            else:
+            elif mode == "SPD":
                 self.btn_test_spd.setText("开始控制")
+            else:  # TRACK
+                self.btn_test_track.setText("开始跟踪")
             
             packed = struct.pack('>BBBhhhB', 0xBF, 0x01, 0x00, 0, 0, 0, 0xFF)
             self.serial_port.write(packed)
@@ -342,12 +402,14 @@ class MotorControllerGUI(QMainWindow):
             if self.is_testing:
                 self.btn_test_pos.setText("开始控制")
                 self.btn_test_spd.setText("开始控制")
+                self.btn_test_track.setText("开始跟踪")
                 
             self.is_testing = True
             self.active_mode = mode
             self.time_data = []
             self.main_data = []
             self.vol_data = []
+            self.ref_data = []
             self.start_time = time.time()
             
             if mode == "POS":
@@ -357,13 +419,19 @@ class MotorControllerGUI(QMainWindow):
                 packed = struct.pack('>BBBhhhB', 0xBF, 0x02, 0x00, pulse, 0, 0, 0xFF)
                 self.serial_port.write(packed)
                 self.log(f"▶️ 位控，目标 {deg}° ({pulse}脉冲)")
-            else:
+            elif mode == "SPD":
                 self.btn_test_spd.setText("停止控制")
                 deg_spd = float(self.target_spd_input.text())
                 pulse = int(deg_spd)
                 packed = struct.pack('>BBBhhhB', 0xBF, 0x03, 0x00, 0, pulse, 0, 0xFF)
                 self.serial_port.write(packed)
                 self.log(f"▶️ 速控，目标 {deg_spd}°/s ({pulse}脉冲/s)")
+            else:  # TRACK
+                self.btn_test_track.setText("停止跟踪")
+                wave_type = self.wave_type_combo.currentText()
+                period = self.wave_period_input.text()
+                amplitude = self.wave_amplitude_input.text()
+                self.log(f"▶️ 跟踪模式：{wave_type}, 周期={period}s, 幅值={amplitude}°")
 
     def update_plot(self):
         if self.serial_port and self.serial_port.in_waiting >= 7:
@@ -393,20 +461,48 @@ class MotorControllerGUI(QMainWindow):
                         self.lbl_voltage.setText(f"当前电压: {command:.2f} V")
                         
                         if self.is_testing:
-                            self.time_data.append(time.time() - self.start_time)
+                            elapsed = time.time() - self.start_time
+                            self.time_data.append(elapsed)
                             # 根据当前控制模式，绘图主线切为对应的值
                             if self.active_mode == "POS":
                                 self.main_data.append(pos_deg)
-                            else:
+                            elif self.active_mode == "SPD":
                                 self.main_data.append(getattr(self, 'last_speed', 0.0))
+                            else:  # TRACK mode
+                                try:
+                                    period = float(self.wave_period_input.text())
+                                    amplitude = float(self.wave_amplitude_input.text())
+
+                                    # Calculate reference position based on wave type
+                                    wave_type = self.wave_type_combo.currentText()
+                                    if wave_type == "方波":
+                                        ref_pos = self.get_square_wave(elapsed, period, amplitude)
+                                    elif wave_type == "正弦波":
+                                        ref_pos = self.get_sine_wave(elapsed, period, amplitude)
+                                    else:  # 三角波
+                                        ref_pos = self.get_triangle_wave(elapsed, period, amplitude)
+
+                                    # Send position command to device
+                                    pulse = int(ref_pos / 360.0 * 1200.0)
+                                    packed = struct.pack('>BBBhhhB', 0xBF, 0x02, 0x00, pulse, 0, 0, 0xFF)
+                                    self.serial_port.write(packed)
+
+                                    self.ref_data.append(ref_pos)
+                                    self.main_data.append(pos_deg)
+                                except Exception as e:
+                                    self.log(f"波形计算异常: {e}")
                             self.vol_data.append(command)
                             if len(self.time_data) > 1500:
                                 self.time_data.pop(0)
                                 self.main_data.pop(0)
                                 self.vol_data.pop(0)
+                                if self.active_mode == "TRACK" and len(self.ref_data) > 0:
+                                    self.ref_data.pop(0)
             if self.is_testing:
                 self.plot_main.setData(self.time_data, self.main_data)
                 self.voltage_curve.setData(self.time_data, self.vol_data)
+                if self.active_mode == "TRACK":
+                    self.ref_curve.setData(self.time_data, self.ref_data)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
