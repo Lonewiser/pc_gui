@@ -20,15 +20,15 @@ class MotorControllerGUI(QMainWindow):
         
         self.serial_port = None
         self.is_testing = False
-        self.active_mode = None # "POS" or "SPD"
+        self.active_mode = None # "POS" or "SPD" or "TRACK" or "VEL_TRACK"
         
         self.motor_params = {
             'K_val': '5.36e-08', 'Bv': '0', 'Cm': '0.02051933',
             'L': '0.00540926', 'J': '0.0000133722', 'Ce': '0.020701',
             'R_res': '0.109872', 'Ts': '0.001'
         }
-        self.pos_lqr_params = {'Q_pos': '5', 'Q_vel': '0.001', 'Q_cur': '0.1', 'R_ctrl': '10'}
-        self.spd_lqr_params = {'Q_vel': '100', 'Q_cur': '0.001', 'R_ctrl': '10'}
+        self.pos_lqr_params = {'Q_pos': '3.5', 'Q_vel': '0.001', 'Q_cur': '0.1', 'R_ctrl': '10'}
+        self.spd_lqr_params = {'Q_vel': '0.001', 'Q_cur': '0.1', 'R_ctrl': '10'}
         
         self.init_ui()
         self.update_port_list()
@@ -95,7 +95,7 @@ class MotorControllerGUI(QMainWindow):
         
         pos_test_group = QGroupBox("位控运行")
         pos_test_layout = QHBoxLayout()
-        self.target_pos_input = QLineEdit("1080")
+        self.target_pos_input = QLineEdit("180")
         pos_test_layout.addWidget(QLabel("位置(度):"))
         pos_test_layout.addWidget(self.target_pos_input)
         self.btn_test_pos = QPushButton("开始控制")
@@ -150,12 +150,12 @@ class MotorControllerGUI(QMainWindow):
 
         # Period input
         track_param_layout.addWidget(QLabel("周期(s):"))
-        self.wave_period_input = QLineEdit("2.0")
+        self.wave_period_input = QLineEdit("2")
         track_param_layout.addWidget(self.wave_period_input)
 
         # Amplitude input
         track_param_layout.addWidget(QLabel("幅值(度):"))
-        self.wave_amplitude_input = QLineEdit("360")
+        self.wave_amplitude_input = QLineEdit("180")
         track_param_layout.addWidget(self.wave_amplitude_input)
 
         track_param_group.setLayout(track_param_layout)
@@ -172,7 +172,44 @@ class MotorControllerGUI(QMainWindow):
         track_layout.addStretch()
 
         self.tabs.addTab(self.tab_track, "位置跟踪")
-        
+
+        # Tab 4: 速度跟踪
+        self.tab_vel_track = QWidget()
+        vel_track_layout = QVBoxLayout(self.tab_vel_track)
+        vel_track_param_group = QGroupBox("波形参数")
+        vel_track_param_layout = QHBoxLayout()
+
+        # Wave type selector
+        vel_track_param_layout.addWidget(QLabel("波形类型:"))
+        self.vel_wave_type_combo = QComboBox()
+        self.vel_wave_type_combo.addItems(["方波", "正弦波", "三角波"])
+        vel_track_param_layout.addWidget(self.vel_wave_type_combo)
+
+        # Period input
+        vel_track_param_layout.addWidget(QLabel("周期(s):"))
+        self.vel_wave_period_input = QLineEdit("3")
+        vel_track_param_layout.addWidget(self.vel_wave_period_input)
+
+        # Amplitude input (in rad/s)
+        vel_track_param_layout.addWidget(QLabel("幅值(rad/s):"))
+        self.vel_wave_amplitude_input = QLineEdit("50")
+        vel_track_param_layout.addWidget(self.vel_wave_amplitude_input)
+
+        vel_track_param_group.setLayout(vel_track_param_layout)
+        vel_track_layout.addWidget(vel_track_param_group)
+
+        # Control button
+        vel_track_test_group = QGroupBox("跟踪运行")
+        vel_track_test_layout = QHBoxLayout()
+        self.btn_test_vel_track = QPushButton("开始跟踪")
+        self.btn_test_vel_track.clicked.connect(lambda: self.toggle_test("VEL_TRACK"))
+        vel_track_test_layout.addWidget(self.btn_test_vel_track)
+        vel_track_test_group.setLayout(vel_track_test_layout)
+        vel_track_layout.addWidget(vel_track_test_group)
+        vel_track_layout.addStretch()
+
+        self.tabs.addTab(self.tab_vel_track, "速度跟踪")
+
         # 日志
         log_group = QGroupBox("日志")
         log_layout = QVBoxLayout()
@@ -215,6 +252,7 @@ class MotorControllerGUI(QMainWindow):
         self.main_data = []
         self.vol_data = []
         self.ref_data = []
+        self.ref_vel_data = []
         self.start_time = time.time()
         
         self.timer = QTimer()
@@ -391,8 +429,10 @@ class MotorControllerGUI(QMainWindow):
                 self.btn_test_pos.setText("开始控制")
             elif mode == "SPD":
                 self.btn_test_spd.setText("开始控制")
-            else:  # TRACK
+            elif mode == "TRACK":
                 self.btn_test_track.setText("开始跟踪")
+            else:  # VEL_TRACK
+                self.btn_test_vel_track.setText("开始跟踪")
             
             packed = struct.pack('>BBBhhhB', 0xBF, 0x01, 0x00, 0, 0, 0, 0xFF)
             self.serial_port.write(packed)
@@ -403,6 +443,7 @@ class MotorControllerGUI(QMainWindow):
                 self.btn_test_pos.setText("开始控制")
                 self.btn_test_spd.setText("开始控制")
                 self.btn_test_track.setText("开始跟踪")
+                self.btn_test_vel_track.setText("开始跟踪")
                 
             self.is_testing = True
             self.active_mode = mode
@@ -410,6 +451,7 @@ class MotorControllerGUI(QMainWindow):
             self.main_data = []
             self.vol_data = []
             self.ref_data = []
+            self.ref_vel_data = []
             self.start_time = time.time()
             
             if mode == "POS":
@@ -426,12 +468,18 @@ class MotorControllerGUI(QMainWindow):
                 packed = struct.pack('>BBBhhhB', 0xBF, 0x03, 0x00, 0, pulse, 0, 0xFF)
                 self.serial_port.write(packed)
                 self.log(f"▶️ 速控，目标 {deg_spd}°/s ({pulse}脉冲/s)")
-            else:  # TRACK
+            elif mode == "TRACK":
                 self.btn_test_track.setText("停止跟踪")
                 wave_type = self.wave_type_combo.currentText()
                 period = self.wave_period_input.text()
                 amplitude = self.wave_amplitude_input.text()
                 self.log(f"▶️ 跟踪模式：{wave_type}, 周期={period}s, 幅值={amplitude}°")
+            else:  # VEL_TRACK
+                self.btn_test_vel_track.setText("停止跟踪")
+                wave_type = self.vel_wave_type_combo.currentText()
+                period = self.vel_wave_period_input.text()
+                amplitude = self.vel_wave_amplitude_input.text()
+                self.log(f"▶️ 速度跟踪模式：{wave_type}, 周期={period}s, 幅值={amplitude}rad/s")
 
     def update_plot(self):
         if self.serial_port and self.serial_port.in_waiting >= 7:
@@ -468,7 +516,7 @@ class MotorControllerGUI(QMainWindow):
                                 self.main_data.append(pos_deg)
                             elif self.active_mode == "SPD":
                                 self.main_data.append(getattr(self, 'last_speed', 0.0))
-                            else:  # TRACK mode
+                            elif self.active_mode == "TRACK":
                                 try:
                                     period = float(self.wave_period_input.text())
                                     amplitude = float(self.wave_amplitude_input.text())
@@ -491,6 +539,29 @@ class MotorControllerGUI(QMainWindow):
                                     self.main_data.append(pos_deg)
                                 except Exception as e:
                                     self.log(f"波形计算异常: {e}")
+                            elif self.active_mode == "VEL_TRACK":
+                                try:
+                                    period = float(self.vel_wave_period_input.text())
+                                    amplitude = float(self.vel_wave_amplitude_input.text())
+
+                                    # Calculate reference velocity based on wave type
+                                    wave_type = self.vel_wave_type_combo.currentText()
+                                    if wave_type == "方波":
+                                        ref_vel = self.get_square_wave(elapsed, period, amplitude)
+                                    elif wave_type == "正弦波":
+                                        ref_vel = self.get_sine_wave(elapsed, period, amplitude)
+                                    else:  # 三角波
+                                        ref_vel = self.get_triangle_wave(elapsed, period, amplitude)
+
+                                    # Send velocity command to device
+                                    pulse = int(ref_vel)
+                                    packed = struct.pack('>BBBhhhB', 0xBF, 0x03, 0x00, 0, pulse, 0, 0xFF)
+                                    self.serial_port.write(packed)
+
+                                    self.ref_vel_data.append(ref_vel)
+                                    self.main_data.append(getattr(self, 'last_speed', 0.0))
+                                except Exception as e:
+                                    self.log(f"速度波形计算异常: {e}")
                             self.vol_data.append(command)
                             if len(self.time_data) > 1500:
                                 self.time_data.pop(0)
@@ -498,11 +569,15 @@ class MotorControllerGUI(QMainWindow):
                                 self.vol_data.pop(0)
                                 if self.active_mode == "TRACK" and len(self.ref_data) > 0:
                                     self.ref_data.pop(0)
+                                elif self.active_mode == "VEL_TRACK" and len(self.ref_vel_data) > 0:
+                                    self.ref_vel_data.pop(0)
             if self.is_testing:
                 self.plot_main.setData(self.time_data, self.main_data)
                 self.voltage_curve.setData(self.time_data, self.vol_data)
                 if self.active_mode == "TRACK":
                     self.ref_curve.setData(self.time_data, self.ref_data)
+                elif self.active_mode == "VEL_TRACK":
+                    self.ref_curve.setData(self.time_data, self.ref_vel_data)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
