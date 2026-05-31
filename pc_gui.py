@@ -572,7 +572,11 @@ class MotorControllerGUI(QMainWindow):
                                 elif self.active_mode == "VEL_TRACK" and len(self.ref_vel_data) > 0:
                                     self.ref_vel_data.pop(0)
             if self.is_testing:
-                self.plot_main.setData(self.time_data, self.main_data)
+                # 对于速度模式，显示数据乘以 xx
+                display_main_data = [y * 0.862 for y in self.main_data] if self.active_mode in ["SPD", "VEL_TRACK"] else self.main_data
+                self.plot_main.setData(self.time_data, display_main_data)
+                # 交代码交下面这个
+                # self.plot_main.setData(self.time_data, self.main_data)
                 self.voltage_curve.setData(self.time_data, self.vol_data)
                 if self.active_mode == "TRACK":
                     self.ref_curve.setData(self.time_data, self.ref_data)
