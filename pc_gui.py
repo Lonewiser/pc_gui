@@ -2,6 +2,8 @@ import sys
 import os
 import struct
 import time
+import csv
+from datetime import datetime
 import numpy as np
 import scipy.linalg
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -28,7 +30,7 @@ class MotorControllerGUI(QMainWindow):
             'R_res': '0.109872', 'Ts': '0.001'
         }
         self.pos_lqr_params = {'Q_pos': '3.5', 'Q_vel': '0.001', 'Q_cur': '0.1', 'R_ctrl': '10'}
-        self.spd_lqr_params = {'Q_vel': '0.001', 'Q_cur': '0.1', 'R_ctrl': '10'}
+        self.spd_lqr_params = {'Q_vel': '80', 'Q_cur': '0.5', 'R_ctrl': '100000'}
         
         self.init_ui()
         self.update_port_list()
@@ -247,14 +249,19 @@ class MotorControllerGUI(QMainWindow):
         self.voltage_curve = self.plot_widget.plot(pen='r', name='电压')
         self.ref_curve = self.plot_widget.plot(pen='g', name='参考位置')
         plot_panel.addWidget(self.plot_widget)
-        
+
         self.time_data = []
         self.main_data = []
         self.vol_data = []
         self.ref_data = []
         self.ref_vel_data = []
+        self.current_data = []  # Store current values for all modes
+        self.speed_data = []    # Store speed values for all modes (separate from main_data)
+        self.angle_data = []    # Store angle values for all modes
+        self.target_data = []   # Store target/reference values for all modes
+        self.last_current = 0  # Store last current value for CSV export
         self.start_time = time.time()
-        
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_plot)
         self.timer.start(1)
@@ -437,6 +444,9 @@ class MotorControllerGUI(QMainWindow):
             packed = struct.pack('>BBBhhhB', 0xBF, 0x01, 0x00, 0, 0, 0, 0xFF)
             self.serial_port.write(packed)
             self.log("⏹️ 停止运行！已下发 0占空比 强制停止。")
+
+            # Save data to CSV
+            self.save_data_to_csv(mode)
         else:
             # 如果另一个模式在跑先停止
             if self.is_testing:
@@ -444,7 +454,7 @@ class MotorControllerGUI(QMainWindow):
                 self.btn_test_spd.setText("开始控制")
                 self.btn_test_track.setText("开始跟踪")
                 self.btn_test_vel_track.setText("开始跟踪")
-                
+
             self.is_testing = True
             self.active_mode = mode
             self.time_data = []
@@ -452,6 +462,10 @@ class MotorControllerGUI(QMainWindow):
             self.vol_data = []
             self.ref_data = []
             self.ref_vel_data = []
+            self.current_data = []
+            self.speed_data = []
+            self.angle_data = []
+            self.target_data = []
             self.start_time = time.time()
             
             if mode == "POS":
@@ -481,6 +495,32 @@ class MotorControllerGUI(QMainWindow):
                 amplitude = self.vel_wave_amplitude_input.text()
                 self.log(f"▶️ 速度跟踪模式：{wave_type}, 周期={period}s, 幅值={amplitude}rad/s")
 
+    def save_data_to_csv(self, mode):
+        """Save control data to CSV file"""
+        # Create directory if it doesn't exist
+        save_dir = r"~\Desktop\motor_data"
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{mode}-{timestamp}.csv"
+        filepath = os.path.join(save_dir, filename)
+
+        try:
+            with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                # Write header
+                writer.writerow(['时间(s)', '角度(°)', '速度(rad/s)', '电流', '电压(V)', '控制数据'])
+                # Write data
+                for t, angle, speed, current, voltage, target in zip(
+                    self.time_data, self.angle_data, self.speed_data,
+                    self.current_data, self.vol_data, self.target_data
+                ):
+                    writer.writerow([t, angle, speed, current, voltage, target])
+            self.log(f"✅ 数据已保存: {filename}")
+        except Exception as e:
+            self.log(f"❌ 保存数据失败: {e}")
+
     def update_plot(self):
         if self.serial_port and self.serial_port.in_waiting >= 7:
             while self.serial_port.in_waiting >= 7:
@@ -495,6 +535,7 @@ class MotorControllerGUI(QMainWindow):
                         print(dt)
                         speed = delta_deg / dt if dt>0 else getattr(self, 'last_speed', 0.0)
                         self.last_speed = speed
+                        self.last_current = current
                         speed = speed
                         self.last_time = time.time()
                         self.lbl_speed.setText(f"当前速度: {speed:.2f} rad/s")
@@ -514,8 +555,10 @@ class MotorControllerGUI(QMainWindow):
                             # 根据当前控制模式，绘图主线切为对应的值
                             if self.active_mode == "POS":
                                 self.main_data.append(pos_deg)
+                                self.target_data.append(float(self.target_pos_input.text()))
                             elif self.active_mode == "SPD":
                                 self.main_data.append(getattr(self, 'last_speed', 0.0))
+                                self.target_data.append(float(self.target_spd_input.text()))
                             elif self.active_mode == "TRACK":
                                 try:
                                     period = float(self.wave_period_input.text())
@@ -537,6 +580,7 @@ class MotorControllerGUI(QMainWindow):
 
                                     self.ref_data.append(ref_pos)
                                     self.main_data.append(pos_deg)
+                                    self.target_data.append(ref_pos)
                                 except Exception as e:
                                     self.log(f"波形计算异常: {e}")
                             elif self.active_mode == "VEL_TRACK":
@@ -560,13 +604,22 @@ class MotorControllerGUI(QMainWindow):
 
                                     self.ref_vel_data.append(ref_vel)
                                     self.main_data.append(getattr(self, 'last_speed', 0.0))
+                                    self.target_data.append(ref_vel)
                                 except Exception as e:
                                     self.log(f"速度波形计算异常: {e}")
                             self.vol_data.append(command)
+                            # Record all data for CSV export
+                            self.current_data.append(getattr(self, 'last_current', 0.0))
+                            self.speed_data.append(getattr(self, 'last_speed', 0.0))
+                            self.angle_data.append(pos_deg)
                             if len(self.time_data) > 1500:
                                 self.time_data.pop(0)
                                 self.main_data.pop(0)
                                 self.vol_data.pop(0)
+                                self.current_data.pop(0)
+                                self.speed_data.pop(0)
+                                self.angle_data.pop(0)
+                                self.target_data.pop(0)
                                 if self.active_mode == "TRACK" and len(self.ref_data) > 0:
                                     self.ref_data.pop(0)
                                 elif self.active_mode == "VEL_TRACK" and len(self.ref_vel_data) > 0:
